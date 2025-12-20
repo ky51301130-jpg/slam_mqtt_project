@@ -1,0 +1,28 @@
+# SLAM MQTT Project Dependencies
+# Install: pip install -r requirements.txt
+
+# MQTT
+paho-mqtt>=2.0.0
+
+# Computer Vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+pillow>=10.0.0
+
+# Web Server (for camera stream)
+flask>=3.0.0
+
+# Serial Communication
+pyserial>=3.5
+
+# I2C (for sensors, LCD)
+smbus2>=0.4.0
+
+# SPI (for sensors)
+spidev>=3.6
+
+# Raspberry Pi GPIO (optional - install manually if needed)
+# rpi-lgpio>=0.6
+
+# WS281x LED (optional - requires manual install from source)
+# See: https://github.com/jgarff/rpi_ws281x
