@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+
+# ROS2 build artifacts (these are in ros2_ws, not in src)
+# build/
+# install/
+# log/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Maps (optional - uncomment if you want to exclude maps)
+# *.pgm
+# *.yaml
