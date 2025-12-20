@@ -1,6 +1,8 @@
 # 🤖 SLAM MQTT Project
 
-> Raspberry Pi 기반 자율주행 로봇의 SLAM/Nav2 통합 시스템
+> Raspberry Pi 기반 자율주행 로봇의 SLAM/Nav2 통합 시스템 (로봇 측 코드)
+
+> 🖥️ 서버 측 코드는 [slam_mqtt_server](https://github.com/ky51301130-jpg/slam_mqtt_server) 저장소를 참조하세요.
 
 ## 📋 문서 구조
 

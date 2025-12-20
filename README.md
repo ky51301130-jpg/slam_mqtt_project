@@ -1,6 +1,12 @@
 # 🤖 SLAM MQTT Project - 완전 가이드
 
-> Raspberry Pi 기반 자율주행 로봇의 SLAM/Nav2 통합 시스템
+![ROS2](https://img.shields.io/badge/ROS2-Jazzy-blue)
+![Python](https://img.shields.io/badge/Python-3.12+-yellow)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+> Raspberry Pi 기반 자율주행 로봇의 SLAM/Nav2 통합 시스템 (로봇 측 코드)
+
+> 🖥️ 서버 측 코드는 [slam_mqtt_server](https://github.com/ky51301130-jpg/slam_mqtt_server) 저장소를 참조하세요.
 
 ## 📋 목차
 
@@ -1160,6 +1166,8 @@ class Nav2GoalNode(Node):
 
 ## MQTT 통신 구조
 
+> 📡 MQTT Broker는 서버(192.168.0.3)에서 운영됩니다. 자세한 서버 설정은 [slam_mqtt_server](https://github.com/ky51301130-jpg/slam_mqtt_server) 저장소를 참조하세요.
+
 ### 📬 필수 모니터링 토픽 (10개)
 
 프로젝트 전체를 모니터링하려면 아래 토픽들이 필수입니다.
@@ -1173,14 +1181,14 @@ class Nav2GoalNode(Node):
 | `plc/location` | PLC→로봇 | PLC가 요청한 목적지 이름 ("station1") |
 | `plc/goal` | PLC→로봇 | PLC 좌표 기반 Goal ({"x":1.0, "y":2.0, "yaw":0}) |
 
-**흐름**: `PLC → plc/location → mqtt_bridge → nav2_goal_node → Nav2 → robot/nav_result`
+**흐름**: `PLC → plc/location → server_mqtt_bridge(서버) → mqtt_bridge(로봇) → nav2_goal_node → Nav2 → robot/nav_result`
 
 #### 📌 (B) SLAM / Map 생성 파이프라인
 
 | MQTT Topic | 방향 | 설명 |
 |------------|------|------|
-| `ros/map_cycle_complete` | 로봇→서버 | SLAM 맵 저장 완료 (8사이클 완료 시) |
-| `collision/photo_ready` | 로봇→서버 | 충돌 사진 발생 이벤트 |
+| `ros/map_cycle_complete` | 로봇→서버 | SLAM 맵 저장 완료 (8사이클 완료 시) → 서버에서 맵 병합 |
+| `collision/photo_ready` | 로봇→서버 | 충돌 사진 URL → 서버가 다운로드하여 저장 (YOLO 학습용) |
 | `qr_detected` | 로봇→서버 | QR 코드 감지 이벤트 |
 
 #### 📌 (C) AI Vision 분석 (서버 발행)
@@ -1402,6 +1410,36 @@ ros2 run tf2_tools view_frames
 
 # SLAM 또는 AMCL이 map 프레임 발행하는지 확인
 ros2 topic echo /tf --filter "frame_id=='map'"
+```
+
+---
+
+## 🔗 관련 저장소
+
+| 저장소 | 역할 | 위치 |
+|----------|------|------|
+| 🤖 [slam_mqtt_project](https://github.com/ky51301130-jpg/slam_mqtt_project) | 로봇 측 코드 (현재) | Raspberry Pi (192.168.0.5) |
+| 🖥️ [slam_mqtt_server](https://github.com/ky51301130-jpg/slam_mqtt_server) | 서버 측 코드 | PC (192.168.0.3) |
+
+### 서버에서 제공하는 기능
+
+- **MQTT Broker** - Mosquitto (:1883)
+- **맵 업로드 서버** - Flask (:5100)
+- **맵 병합** - 8장 ICP 정렬 + 과반수 투표
+- **AI 비전** - ArUco + YOLO 감지
+- **모니터링** - Grafana + InfluxDB
+- **충돌 사진 저장** - YOLO 학습 데이터 수집
+
+### 데이터 흐름
+
+```
+로봇 (192.168.0.5)                  서버 (192.168.0.3)
+     │                                  │
+     │ ─── SLAM 맵 업로드 ────────▶ │ nav2_map_builder (맵 병합)
+     │ ─── 충돌 사진 URL ─────────▶ │ unified_server (사진 다운로드)
+     │ ◀── PLC/MCU 명령 ─────────── │ server_mqtt_bridge
+     │ ◀── 병합된 맵 (Nav2용) ───── │
+     │                                  │
 ```
 
 ---
