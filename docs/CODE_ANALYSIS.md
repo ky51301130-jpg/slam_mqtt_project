@@ -279,13 +279,17 @@ def nav_status_cb(self, msg: String):
 
 ---
 
-### 7. 🔔 led_controller_node.py (상태 표시 + MCU Lux 연동)
+### 7. 🔔 status_display_node.py (LED + LCD 통합 표시)
+
+**역할**: WS281x LED + LCD를 통합 관리하여 로봇 상태 시각화
+- 기존 `led_controller_node.py` + `lcd_status_node.py` + `ultrasonic_node.py` 통합
+- 저전력 최적화: 변화 있을 때만 업데이트
 
 ```python
 # ===== MCU 센서 데이터 수신 =====
 LUX_THRESHOLD = 100  # 밝음/어두움 기준값 (lux)
 
-def sensor_callback(self, msg):
+def sensor_cb(self, msg):
     try:
         data = json.loads(msg.data)  # {"Lux": 150.5, ...}
         
@@ -303,9 +307,9 @@ def sensor_callback(self, msg):
         pass
 
 # ===== 맵 저장 진행률 표시 (SLAM 모드) =====
-def show_progress(self):
+def _set_led_progress(self, count, total=8):
     for i in range(NUM_LEDS):  # 8개 LED
-        if i < self.map_save_count:
+        if i < count:
             self.leds.set_pixel(i, ORANGE)  # 완료
         else:
             self.leds.set_pixel(i, RED)      # 대기
@@ -313,11 +317,66 @@ def show_progress(self):
 
 # ===== 상태별 색상 =====
 colors = {
-    "driving": RED,    # SLAM 주행 중
-    "bright": GREEN,   # Lux >= 100 (밝은 환경)
-    "dark": BLUE,      # Lux < 100 (어두운 환경)
-    "idle": OFF        # 대기
+    "driving": RED,       # SLAM 주행 중
+    "map_saving": None,   # 진행률 표시
+    "bright": GREEN,      # Lux >= 100 (밝은 환경)
+    "dark": BLUE,         # Lux < 100 (어두운 환경)
+    "idle": OFF           # 대기
 }
+
+# ===== LCD 배터리/모드 표시 =====
+def update_lcd(self):
+    img = Image.new('RGB', (320, 240), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # 모드 표시 (SLAM: 파랑, NAV2: 보라)
+    mode_color = MODE_COLORS.get(self.robot_mode)
+    draw.rectangle([(0, 0), (320, 50)], fill=mode_color)
+    
+    # 배터리 바
+    bar_width = int(280 * self.battery_percent / 100)
+    draw.rectangle([(20, 80), (300, 130)], outline=(100, 100, 100))
+    draw.rectangle([(22, 82), (22 + bar_width, 128)], fill=self._get_battery_color())
+    
+    self.lcd.img_show(img)
+```
+
+---
+
+### 8. 🎯 aruco_dock_node.py (ArUco 정밀 도킹) - NEW!
+
+**역할**: Nav2 도착 후 ArUco 마커로 정밀 위치 조정
+
+```python
+# ===== ArUco 마커 ID → 포트 매핑 =====
+MARKER_PORT_MAP = {
+    0: "HOME",       # ID 0 = HOME (충전/기준점)
+    1: "PORT_A",     # ID 1 = 작업위치 A
+    2: "PORT_B",     # ID 2 = 작업위치 B
+}
+
+# ===== 도킹 제어 루프 =====
+def dock_control_loop(self):
+    if not self.docking_enabled:
+        return
+    
+    # ArUco 마커 감지
+    corners, ids, _ = self.aruco_detector.detectMarkers(frame)
+    
+    if self.target_marker_id in ids:
+        # 마커 위치 계산
+        rvec, tvec = cv2.solvePnP(...)
+        distance = np.linalg.norm(tvec)
+        
+        # 정밀 접근
+        if distance > self.DOCK_DISTANCE:
+            twist.linear.x = self.LINEAR_SPEED
+            twist.angular.z = -center_error * self.ANGULAR_SPEED
+        else:
+            # 도킹 완료!
+            self.save_port_position()
+            self.publish_arrival()
+```
 ```
 
 ---

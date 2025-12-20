@@ -68,25 +68,44 @@
 ```
 slam_mqtt_project/
 ├── slam_mqtt_project/
-│   ├── auto_drive_node.py      # SLAM 자율 탐색
+│   │
+│   │  ===== SLAM 모드 전용 =====
+│   ├── auto_drive_node.py      # SLAM 자율 탐색 + ArUco HOME 도킹
 │   ├── map_saver_node.py       # 맵 저장 + 서버 업로드
-│   ├── nav2_goal_node.py       # MQTT → Nav2 Goal
-│   ├── camera_stream_node.py   # Nav2용 스트리밍
 │   ├── collision_photo_node.py # SLAM용 충돌 사진
-│   ├── mqtt_bridge_node.py     # ROS2 ↔ MQTT
-│   ├── ultrasonic_node.py      # 초음파 센서
-│   ├── led_controller_node.py  # LED 상태 표시
-│   └── lcd_status_node.py      # LCD 배터리 표시
+│   │
+│   │  ===== NAV2 모드 전용 =====
+│   ├── nav2_goal_node.py       # MQTT/PLC → Nav2 Goal + ArUco 연동
+│   ├── camera_stream_node.py   # Nav2용 스트리밍 (Flask)
+│   ├── aruco_dock_node.py      # ArUco 정밀 도킹 ← NEW!
+│   │
+│   │  ===== 공통 =====
+│   ├── mqtt_bridge_node.py     # ROS2 ↔ MQTT 브릿지
+│   ├── status_display_node.py  # LED + LCD 통합 표시 ← 통합!
+│   ├── robot_map_loader.py     # 로봇에서 맵 로드
+│   │
+│   │  ===== 설정 도구 =====
+│   ├── set_home_by_aruco.py    # ArUco 마커로 HOME 설정
+│   ├── set_home_pose.py        # 수동 HOME 위치 설정
+│   ├── aruco_calibration.py    # 카메라 캘리브레이션
+│   │
+│   │  ===== 토픽 관리 =====
+│   └── topics.py               # ROS2/MQTT 토픽 중앙 관리 ← NEW!
+│
 ├── launch/
 │   ├── slam_exploration.launch.py  # SLAM 모드 런치
-│   └── nav2_mode.launch.py         # Nav2 모드 런치
+│   ├── nav2_mode.launch.py         # Nav2 모드 런치
+│   └── set_home.launch.py          # HOME 설정 런치 ← NEW!
+│
 ├── config/
 │   └── nav2_params.yaml            # Nav2 파라미터
+│
 ├── docs/
 │   ├── README.md                   # 프로젝트 개요
 │   ├── SYSTEM_ARCHITECTURE.md      # 시스템 구조
 │   ├── CODE_ANALYSIS.md            # 코드 분석
 │   └── QUICK_START.md              # 빠른 시작
+│
 └── README.md                       # 메인 README
 ```
 

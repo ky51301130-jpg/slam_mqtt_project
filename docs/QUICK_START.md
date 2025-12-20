@@ -78,10 +78,10 @@ colcon build --packages-select slam_mqtt_project
 
 ```bash
 # 터미널 1: 전체 SLAM 시스템
-ros2 launch slam_mqtt_project slam_mode.launch.py
+ros2 launch slam_mqtt_project slam_exploration.launch.py
 
 # 터미널 2: RViz (원격 PC에서)
-ros2 launch slam_mqtt_project slam_rviz.launch.py
+ros2 launch pinky_navigation slam_view.launch.xml
 ```
 
 ### Nav2 모드 (네비게이션)
@@ -91,20 +91,30 @@ ros2 launch slam_mqtt_project slam_rviz.launch.py
 ros2 launch slam_mqtt_project nav2_mode.launch.py map:=/path/to/map.yaml
 
 # 터미널 2: RViz (원격 PC에서)
-ros2 launch slam_mqtt_project nav2_rviz.launch.py
+ros2 launch pinky_navigation nav2_view.launch.xml
+```
+
+### HOME 설정 (선택적)
+
+```bash
+# ArUco 마커로 HOME 위치 설정
+ros2 launch slam_mqtt_project set_home.launch.py
 ```
 
 ### 개별 노드 실행 (테스트용)
 
 ```bash
 # MQTT 브릿지
-ros2 run slam_mqtt_project mqtt_bridge_node
+ros2 run slam_mqtt_project mqtt_bridge
 
-# 카메라 스트리밍
-ros2 run slam_mqtt_project camera_stream_node
+# 카메라 스트리밍 (Nav2)
+ros2 run slam_mqtt_project nav2_camera_stream
 
-# 자율 주행
-ros2 run slam_mqtt_project auto_drive_node
+# 자율 주행 (SLAM)
+ros2 run slam_mqtt_project slam_auto_drive
+
+# 상태 표시 (LED + LCD)
+sudo -E ros2 run slam_mqtt_project status_display
 ```
 
 ---
@@ -241,7 +251,7 @@ libcamera-hello --list-cameras
 
 ```bash
 # root 권한으로 실행
-sudo -E ros2 run slam_mqtt_project led_controller_node
+sudo -E ros2 run slam_mqtt_project status_display
 
 # 또는 그룹 권한 추가
 sudo usermod -a -G gpio $USER

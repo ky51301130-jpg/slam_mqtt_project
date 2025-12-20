@@ -87,16 +87,17 @@
 │  └─────────────┘                     └─────────────┘           │
 │                                                                 │
 │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐           │
-│  │ ultrasonic  │   │ led_ctrl    │   │ collision   │           │
-│  │   _node     │   │   _node     │   │ _photo_node │           │
-│  └─────────────┘   └─────┬───────┘   └─────────────┘           │
-│                          │                                      │
-│                          │ /mqtt/mcu_sensors (Lux)              │
-│                          ▼                                      │
-│                    ┌─────────────┐                              │
-│                    │ mqtt_bridge │ ◀── MCU (mcu/sensors)        │
-│                    │   _node     │                              │
-│                    └─────────────┘                              │
+│  │   status    │   │ mqtt_bridge │   │ collision   │           │
+│  │ _display    │◀──│   _node     │◀──│ _photo_node │           │
+│  │ (LED+LCD)   │   │             │   │             │           │
+│  └─────────────┘   └─────────────┘   └─────────────┘           │
+│        │                  ▲                                     │
+│        │ Lux 기반 LED     │ MCU (mcu/sensors)                   │
+│        ▼                  │                                     │
+│  ┌─────────────┐          │                                     │
+│  │  WS281x LED │          │                                     │
+│  │  + LCD 표시 │          │                                     │
+│  └─────────────┘          │                                     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -117,10 +118,17 @@
 │  │   _node     │   │   명령      │   │ _stream_node│           │
 │  └─────────────┘   └─────────────┘   └─────────────┘           │
 │                                                                 │
-│  ┌─────────────┐   ┌─────────────┐                              │
-│  │ led_ctrl    │◀──│ mqtt_bridge │ ◀── MCU (Lux 센서)          │
-│  │   _node     │   │   _node     │                              │
-│  └─────────────┘   └─────────────┘                              │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐           │
+│  │   status    │◀──│ mqtt_bridge │   │ aruco_dock  │           │
+│  │  _display   │   │   _node     │   │   _node     │           │
+│  │ (LED+LCD)   │   └─────────────┘   └─────────────┘           │
+│  └─────────────┘          ▲                  │                  │
+│                           │                  │ 정밀 도킹        │
+│                      MCU (Lux)               ▼                  │
+│                                        ┌─────────────┐          │
+│                                        │  ArUco 마커 │          │
+│                                        │  위치 측정  │          │
+│                                        └─────────────┘          │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -449,9 +457,11 @@ def start_mqtt(self):
 
 ---
 
-### 7. 🔔 led_controller_node.py (상태 표시)
+### 7. 🔔 status_display_node.py (LED + LCD 통합 표시)
 
-**역할**: WS281x LED로 로봇 상태 시각화 + **MCU Lux 센서 연동**
+**역할**: WS281x LED + LCD를 통합 관리하여 로봇 상태 시각화
+- 기존 `led_controller_node.py` + `lcd_status_node.py` + `ultrasonic_node.py` 통합
+- 저전력 최적화: 변화 있을 때만 업데이트
 
 **데이터 흐름**:
 
@@ -465,109 +475,170 @@ MCU (ESP32)                  MQTT Broker              ROS2
     │                            ├─────────────────────▶│ mqtt_bridge_node
     │                            │                      │       │
     │                            │                      │       ▼
-    │                            │                      │ led_controller_node
-    │                            │                      │   (Lux 기반 LED 제어)
+    │                            │                      │ status_display_node
+    │                            │                      │   (LED + LCD 통합)
 ```
 
 **핵심 코드**:
 
 ```python
-# ===== MCU 센서 데이터 수신 =====
-LUX_THRESHOLD = 100  # 밝음/어두움 기준값 (lux)
-
-def sensor_callback(self, msg):
-    """MQTT Bridge를 통해 MCU 센서 데이터 수신"""
-    try:
-        data = json.loads(msg.data)  # {"Lux": 150.5, ...}
+# ===== LED + LCD 통합 노드 =====
+class StatusDisplayNode(Node):
+    def __init__(self):
+        # LED 초기화 (WS281x)
+        self.leds = LED()
+        self.leds.__enter__()
         
-        if "Lux" in data:
-            self.current_lux = float(data["Lux"])
-            
-            # Nav2 모드: 항상 Lux 기반 LED
-            # SLAM 모드: 주행 중이 아닐 때만 Lux 적용
-            if self.robot_mode == "NAV2" or not self.is_driving:
-                if self.current_lux >= LUX_THRESHOLD:
-                    self.current_led_mode = "bright"   # 밝음 → GREEN
-                else:
-                    self.current_led_mode = "dark"     # 어두움 → BLUE
-    except:
-        pass
+        # LCD 초기화 (SPI)
+        self.lcd = LCD()
+        
+        # 상태 변수
+        self.robot_mode = "IDLE"      # SLAM/NAV2/IDLE
+        self.current_lux = 0           # MCU에서 수신
+        self.map_save_count = 0        # 맵 저장 진행률
+        self.battery_percent = 50.0    # 배터리 잔량
+        
+        # 구독: 모드, Lux, 맵 저장, 배터리
+        self.create_subscription(String, ROS.ROBOT_MODE, self.mode_cb, 1)
+        self.create_subscription(String, ROS.MQTT_MCU_SENSORS, self.sensor_cb, 1)
+        self.create_subscription(Int32, ROS.MAP_SAVER_SAVED, self.map_saved_cb, 1)
+        self.create_subscription(Float32, ROS.BATTERY_PRESENT, self.battery_cb, 1)
 
-# ===== 맵 저장 진행률 표시 (SLAM 모드) =====
-def show_progress(self):
-    for i in range(NUM_LEDS):  # 8개 LED
-        if i < self.map_save_count:
-            self.leds.set_pixel(i, ORANGE)  # 완료
+# ===== MCU Lux 센서 처리 =====
+LUX_THRESHOLD = 100  # 밝음/어두움 기준
+
+def sensor_cb(self, msg):
+    data = json.loads(msg.data)  # {"Lux": 150.5}
+    if "Lux" in data:
+        self.current_lux = float(data["Lux"])
+        # Lux 기반 LED 색상 결정
+        if self.current_lux >= LUX_THRESHOLD:
+            self.current_led_mode = "bright"   # GREEN
         else:
-            self.leds.set_pixel(i, RED)      # 대기
+            self.current_led_mode = "dark"     # BLUE
+
+# ===== 맵 저장 진행률 LED =====
+def _set_led_progress(self, count, total=8):
+    """맵 저장 진행률: 저장된 만큼 ORANGE, 나머지 RED"""
+    for i in range(NUM_LEDS):
+        color = ORANGE if i < count else RED
+        self.leds.set_pixel(i, color)
     self.leds.show()
 
-# ===== 상태별 색상 =====
+# ===== 상태별 LED 색상 =====
 colors = {
-    "driving": RED,    # SLAM 주행 중
-    "bright": GREEN,   # Lux >= 100 (밝은 환경)
-    "dark": BLUE,      # Lux < 100 (어두운 환경)
-    "idle": OFF        # 대기
+    "driving": RED,      # SLAM 주행 중
+    "map_saving": None,  # 진행률 표시 (_set_led_progress)
+    "bright": GREEN,     # Lux >= 100 (밝은 환경)
+    "dark": BLUE,        # Lux < 100 (어두운 환경)
+    "idle": OFF          # 대기
 }
+
+# ===== LCD 배터리/모드 표시 =====
+def update_lcd(self):
+    img = Image.new('RGB', (320, 240), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # 모드 표시 (SLAM: 파랑, NAV2: 보라)
+    mode_color = MODE_COLORS.get(self.robot_mode)
+    draw.rectangle([(0, 0), (320, 50)], fill=mode_color)
+    draw.text((160, 25), self.robot_mode, font=self.font_large, anchor="mm")
+    
+    # 배터리 바
+    bar_width = int(280 * self.battery_percent / 100)
+    draw.rectangle([(20, 80), (300, 130)], outline=(100, 100, 100))
+    draw.rectangle([(22, 82), (22 + bar_width, 128)], fill=self._get_battery_color())
+    
+    self.lcd.img_show(img)
 ```
 
 **학습 포인트**:
-- MCU → MQTT → mqtt_bridge → led_controller 데이터 흐름
+- MCU → MQTT → mqtt_bridge → status_display 데이터 흐름
 - Lux 센서: 환경 밝기에 따른 LED 색상 변경
 - 모드별 동작: SLAM(진행률), Nav2(Lux 기반)
+- 통합 노드: LED + LCD + 배터리를 한 노드에서 관리 (리소스 절약)
 
 ---
 
-### 8. 📊 lcd_status_node.py (배터리/모드 표시)
+### 8. 🎯 aruco_dock_node.py (ArUco 정밀 도킹) - NEW!
 
-**역할**: 320x240 LCD에 배터리, 모드 표시
+**역할**: Nav2 도착 후 ArUco 마커로 정밀 위치 조정
 
-**핵심 코드**:
-
-```python
-# ===== 배터리 색상 계산 =====
-@staticmethod
-def get_battery_color(pct):
-    if pct > 50: return (0, 150, 0)     # 녹색
-    elif pct > 20: return (255, 165, 0)  # 주황
-    return (200, 0, 0)                    # 빨강
-
-# ===== PIL로 이미지 생성 =====
-img = Image.new('RGB', (320, 240), (20, 20, 30))
-draw = ImageDraw.Draw(img)
-
-# 배터리 바
-fill_width = int(240 * (battery_percent / 100))
-draw.rectangle([40+5, 80+5, 40+5+fill_width, 140-5], 
-               fill=get_battery_color(battery_percent))
-
-self.lcd.img_show(img)
+**흐름**:
+```
+1. Nav2로 PORT_A 근처 도착
+2. nav2_goal_node가 dock_enable = True 발행
+3. aruco_dock_node가 카메라로 ArUco 마커 감지
+4. 마커 위치/각도 기반 정밀 접근
+5. 도킹 완료 시 위치 저장 + 알림
 ```
 
----
-
-### 9. 🎧 ultrasonic_node.py (근거리 감지)
-
-**역할**: 초음파 센서로 전방 장애물 감지
-
 **핵심 코드**:
 
 ```python
-# ===== 변화 기반 발행 (대역폭 절약) =====
-def timer_cb(self):
-    dist = self.measure()
+# ===== ArUco 마커 ID → 포트 매핑 =====
+MARKER_PORT_MAP = {
+    0: "HOME",       # ID 0 = HOME (충전/기준점)
+    1: "PORT_A",     # ID 1 = 작업위치 A
+    2: "PORT_B",     # ID 2 = 작업위치 B
+    # ...
+}
+
+# ===== 도킹 제어 루프 =====
+def dock_control_loop(self):
+    if not self.docking_enabled:
+        return
     
-    # 3cm 이상 변화 시에만 발행
-    if abs(dist - self.last_dist) >= self.min_change:
-        msg = Float32()
-        msg.data = dist
-        self.pub.publish(msg)
-        self.last_dist = dist
+    # ArUco 마커 감지
+    corners, ids, _ = self.aruco_detector.detectMarkers(frame)
+    
+    if self.target_marker_id in ids:
+        # 마커 위치 계산 (x, y, z, yaw)
+        rvec, tvec = cv2.solvePnP(...)
+        distance = np.linalg.norm(tvec)
+        
+        # 정밀 접근
+        if distance > self.DOCK_DISTANCE:
+            # 전진 + 각도 보정
+            twist.linear.x = self.LINEAR_SPEED
+            twist.angular.z = -center_error * self.ANGULAR_SPEED
+        else:
+            # 도킹 완료!
+            self.save_port_position()
+            self.publish_arrival()
+```
+        if i < self.map_save_count:
+---
+
+### 9. 📝 topics.py (토픽 중앙 관리) - NEW!
+
+**역할**: 모든 ROS2/MQTT 토픽을 한 파일에서 관리
+
+**사용법**:
+
+```python
+from slam_mqtt_project.topics import ROS, MQTT, NET, ARUCO
+
+# ROS2 토픽 사용
+self.create_subscription(String, ROS.ROBOT_MODE, self.cb, 10)
+self.create_publisher(Twist, ROS.CMD_VEL, 10)
+
+# MQTT 토픽 사용
+self.mqtt.subscribe(MQTT.SUB_MCU_SENSORS)  # "/mcu/sensors"
+self.mqtt.publish(MQTT.PUB_NAV_STATUS, payload)
+
+# 네트워크 설정
+print(f"Server: {NET.SERVER_IP}:{NET.MQTT_PORT}")
+print(f"Map Upload: {NET.map_upload_url()}")
+
+# ArUco 마커 설정
+marker_map = ARUCO.PORT_MAP  # {0: "HOME", 1: "PORT_A", ...}
 ```
 
-**학습 포인트**:
-- 변화 기반 발행: 대역폭/CPU 절약
-- 3Hz 측정: 배터리 최적화
+**장점**:
+- 토픽 수정 시 한 파일만 수정
+- 타이핑/자동완성 지원
+- IP/포트 중앙 관리
 
 ---
 
@@ -1340,20 +1411,44 @@ ros2 topic echo /tf --filter "frame_id=='map'"
 ```
 slam_mqtt_project/
 ├── slam_mqtt_project/
-│   ├── auto_drive_node.py      # SLAM 자율 탐색 (515줄)
-│   ├── map_saver_node.py       # 맵 저장 + 서버 업로드 (330줄)
-│   ├── nav2_goal_node.py       # MQTT → Nav2 Goal (335줄)
-│   ├── camera_stream_node.py   # Nav2용 스트리밍 (390줄)
-│   ├── collision_photo_node.py # SLAM용 충돌 사진 (307줄)
-│   ├── mqtt_bridge_node.py     # ROS2 ↔ MQTT (97줄)
-│   ├── ultrasonic_node.py      # 초음파 센서 (68줄)
-│   ├── led_controller_node.py  # LED 상태 표시 (99줄)
-│   └── lcd_status_node.py      # LCD 배터리 표시 (160줄)
+│   │
+│   │  ===== SLAM 모드 전용 (3개) =====
+│   ├── auto_drive_node.py      # SLAM 자율 탐색 + ArUco HOME 도킹 (1065줄)
+│   ├── map_saver_node.py       # 맵 저장 + 서버 업로드
+│   ├── collision_photo_node.py # SLAM용 충돌 사진
+│   │
+│   │  ===== NAV2 모드 전용 (3개) =====
+│   ├── nav2_goal_node.py       # MQTT/PLC → Nav2 Goal + ArUco 연동 (438줄)
+│   ├── camera_stream_node.py   # Nav2용 스트리밍 (Flask)
+│   ├── aruco_dock_node.py      # ArUco 정밀 도킹 (443줄) ← NEW!
+│   │
+│   │  ===== 공통 (3개) =====
+│   ├── mqtt_bridge_node.py     # ROS2 ↔ MQTT 브릿지
+│   ├── status_display_node.py  # LED + LCD 통합 표시 (287줄) ← 통합!
+│   ├── robot_map_loader.py     # 로봇에서 맵 로드 (Nav2 시작용)
+│   │
+│   │  ===== 설정 도구 (3개) =====
+│   ├── set_home_by_aruco.py    # ArUco 마커로 HOME 설정 ← NEW!
+│   ├── set_home_pose.py        # 수동 HOME 위치 설정
+│   ├── aruco_calibration.py    # 카메라 캘리브레이션
+│   │
+│   │  ===== 토픽 관리 =====
+│   └── topics.py               # ROS2/MQTT 토픽 중앙 관리 (322줄) ← NEW!
+│
 ├── launch/
 │   ├── slam_exploration.launch.py  # SLAM 모드 런치
-│   └── nav2_mode.launch.py         # Nav2 모드 런치
+│   ├── nav2_mode.launch.py         # Nav2 모드 런치
+│   └── set_home.launch.py          # HOME 설정 런치 ← NEW!
+│
 ├── config/
 │   └── nav2_params.yaml            # Nav2 파라미터
+│
+├── docs/
+│   ├── QUICK_START.md              # 빠른 시작 가이드
+│   ├── CODE_ANALYSIS.md            # 코드 분석
+│   ├── SYSTEM_ARCHITECTURE.md      # 시스템 구조
+│   └── README.md                   # docs용 README
+│
 └── README.md                       # 이 문서
 ```
 
