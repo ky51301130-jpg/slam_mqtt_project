@@ -4,6 +4,8 @@
 
 > 🖥️ 서버 측 아키텍처는 [slam_mqtt_server](https://github.com/ky51301130-jpg/slam_mqtt_server) 저장소를 참조하세요.
 
+> 🤖 이 프로젝트는 [pinklab-art/pinky_pro](https://github.com/pinklab-art/pinky_pro) ROS2 패키지를 기반으로 개발되었습니다.
+
 ---
 
 ## 📊 노드 구성도

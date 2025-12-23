@@ -141,12 +141,26 @@ def generate_launch_description():
         output='screen',
     )
 
-    # 7. 충돌 사진 노드 (SLAM 모드 - 포트 5001)
+    # 7. 충돌 사진 노드 (SLAM 모드 - 포트 5000)
     collision_photo_node = Node(
         package='slam_mqtt_project',
         executable='slam_collision_photo',
         name='slam_collision_photo',
         output='screen',
+    )
+
+    # 8. 카메라 스트리밍 (SLAM 모드 - AI 서버 분석용, 포트 5200)
+    camera_stream_node = Node(
+        package='slam_mqtt_project',
+        executable='nav2_camera_stream',
+        name='slam_camera_stream',
+        output='screen',
+        parameters=[{
+            'fps': 1.0,
+            'width': 320,
+            'height': 240,
+            'port': 5200,
+        }],
     )
 
     # 종료 시 모터 정지 명령 (백업)
@@ -192,12 +206,13 @@ def generate_launch_description():
             ]
         ),
         
-        # 4. 자동 탐색 + 맵 저장 (5초 후 - SLAM 준비 대기)
+        # 4. 자동 탐색 + 맵 저장 + 카메라 스트리밍 (5초 후 - SLAM 준비 대기)
         TimerAction(
             period=5.0,
             actions=[
                 auto_drive_node,
                 map_saver_node,
+                camera_stream_node,
             ]
         ),
         

@@ -3,10 +3,13 @@
 ![ROS2](https://img.shields.io/badge/ROS2-Jazzy-blue)
 ![Python](https://img.shields.io/badge/Python-3.12+-yellow)
 ![License](https://img.shields.io/badge/License-MIT-green)
+![Based on](https://img.shields.io/badge/Based_on-Pinky_Pro-ff69b4)
 
 > Raspberry Pi 기반 자율주행 로봇의 SLAM/Nav2 통합 시스템 (로봇 측 코드)
 
 > 🖥️ 서버 측 코드는 [slam_mqtt_server](https://github.com/ky51301130-jpg/slam_mqtt_server) 저장소를 참조하세요.
+
+> 🤖 이 프로젝트는 [pinklab-art/pinky_pro](https://github.com/pinklab-art/pinky_pro) ROS2 패키지를 기반으로 개발되었습니다.
 
 ## 📋 목차
 
@@ -32,8 +35,8 @@
 
 | 모드 | 기능 | 카메라 | 포트 |
 |------|------|--------|------|
-| **SLAM** | 자율 탐색 + 맵 생성 | 충돌 시 사진 | 5001 |
-| **Nav2** | 맵 기반 목표점 이동 | 1fps 스트리밍 | 5000 |
+| **SLAM** | 자율 탐색 + 맵 생성 | 충돌 사진 + AI 분석 | 5000 (사진), 5200 (스트리밍) |
+| **Nav2** | 맵 기반 목표점 이동 | 1fps 스트리밍 | 5200 |
 
 ### 🖥️ 하드웨어 구성
 
@@ -1498,11 +1501,49 @@ MIT License
 
 ---
 
-## 🙏 감사의 말
+## 🙏 Special Thanks & 기반 프로젝트
 
-- ROS2 Jazzy
-- Nav2 Navigation Stack
-- SLAM Toolbox
-- paho-mqtt
-- Flask
-- Picamera2
+### 🤖 Pinky Pro
+
+이 프로젝트는 **[pinklab-art/pinky_pro](https://github.com/pinklab-art/pinky_pro)** ROS2 패키지를 기반으로 개발되었습니다.
+
+| 항목 | 내용 |
+|------|------|
+| **원본 저장소** | [github.com/pinklab-art/pinky_pro](https://github.com/pinklab-art/pinky_pro) |
+| **라이선스** | Apache-2.0 |
+| **환경** | Ubuntu 24.04 + ROS2 Jazzy |
+
+#### Pinky Pro 기여자
+
+- [@kyunghwan51](https://github.com/kyunghwan51) - 민경환 (메인 개발자)
+- [@byeongkyu](https://github.com/byeongkyu) - Byeong-Kyu Ahn (ROS2 패키지 개발, [pinky_robot](https://github.com/byeongkyu/pinky_robot) 참고)
+- [@deMerui](https://github.com/deMerui) - nomaefg
+
+#### Pinky Pro 참고 자료
+
+- 📚 [Pinky Pro 수업 자료 (Google Drive)](https://drive.google.com/drive/folders/1MeBp7xXAmHrNdEJYtsQ25DtCSrlwyAwC)
+- 💡 [Pinky Pro Assistants (ChatGPT)](https://chatgpt.com/g/g-69141c60b0908191975d16ce2421b768-pinky-pro-assistants)
+
+### 사용된 패키지 (Pinky Pro 기반)
+
+| 패키지 | 역할 |
+|--------|------|
+| `pinky_bringup` | 로봇 하드웨어 초기화 |
+| `pinky_navigation` | Nav2 런치 및 설정 |
+| `pinky_description` | URDF/로봇 모델 |
+| `pinky_led` | WS281x LED 제어 |
+| `pinky_emotion` | LCD 감정 표시 |
+| `pinky_interfaces` | 커스텀 서비스/메시지 |
+
+---
+
+### 🛠️ 오픈소스 라이브러리
+
+- [ROS2 Jazzy](https://docs.ros.org/en/jazzy/) - 로봇 운영체제
+- [Nav2 Navigation Stack](https://nav2.org/) - 자율 네비게이션
+- [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox) - SLAM 알고리즘
+- [paho-mqtt](https://www.eclipse.org/paho/) - MQTT 클라이언트
+- [Flask](https://flask.palletsprojects.com/) - 웹 서버
+- [Picamera2](https://github.com/raspberrypi/picamera2) - 라즈베리파이 카메라
+- [rpi-ws281x](https://github.com/jgarff/rpi_ws281x) - WS281x LED 드라이버
+- [OpenCV](https://opencv.org/) - 컴퓨터 비전 (ArUco 마커)

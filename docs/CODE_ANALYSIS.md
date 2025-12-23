@@ -2,6 +2,8 @@
 
 > 노드별 핵심 코드, AMCL/Behavior Tree 상세 설명
 
+> 🤖 이 프로젝트는 [pinklab-art/pinky_pro](https://github.com/pinklab-art/pinky_pro) ROS2 패키지를 기반으로 개발되었습니다.
+
 ---
 
 ## 📋 목차

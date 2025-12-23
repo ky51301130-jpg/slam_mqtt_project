@@ -224,9 +224,9 @@ class ARUCO:
     DOCK_SIZE_TARGET = 250    # 목표 (이 근처면 OK)
     DOCK_CENTER_TOLERANCE = 0.10  # 중앙 정렬 허용 오차 (normalized: -1~1)
     
-    DOCK_SPEED_FORWARD = 0.08  # 전진 속도 (m/s)
-    DOCK_SPEED_BACK = 0.05     # 후진 속도 (m/s)
-    DOCK_ANGULAR_P = 0.6       # 회전 P 게인
+    DOCK_SPEED_FORWARD = 0.12  # 전진 속도 (m/s)
+    DOCK_SPEED_BACK = 0.06     # 후진 속도 (m/s)
+    DOCK_ANGULAR_P = 0.4       # 회전 P 게인 (낮춤)
     DOCK_STABLE_COUNT = 5      # N프레임 연속이면 완료
     
     # ======================== 도킹 토픽 ========================

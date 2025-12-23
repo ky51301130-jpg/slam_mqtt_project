@@ -1,362 +1,224 @@
 #!/usr/bin/env python3
-"""SLAM 충돌 사진 + ArUco 감지 노드 (간소화 버전)
+"""충돌 사진 + ArUco 감지 + Flask 웹서버 노드"""
 
-기능:
-- 초음파 충돌 감지 시 사진 촬영
-- ArUco 마커 감지 → HOME/PORT 발행
-- SLAM 모드에서 PORT 좌표 자동 저장
-- Flask HTTP 서버 (사진 다운로드)
-"""
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, String, Bool
-from sensor_msgs.msg import CompressedImage
-from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-import os
-import time
-import threading
-import json
-import math
+import os, time, threading, json, math
 import numpy as np
 from datetime import datetime
 
-cv2 = None  # Lazy import
+cv2 = None
 
 try:
     from flask import Flask, jsonify, send_file
-    FLASK_AVAILABLE = True
+    FLASK_OK = True
 except ImportError:
-    FLASK_AVAILABLE = False
+    FLASK_OK = False
 
 try:
     from picamera2 import Picamera2
-    PICAMERA_AVAILABLE = True
+    PICAM_OK = True
 except ImportError:
-    PICAMERA_AVAILABLE = False
+    PICAM_OK = False
 
-try:
-    import paho.mqtt.client as mqtt
-    MQTT_AVAILABLE = True
-except ImportError:
-    MQTT_AVAILABLE = False
+from slam_mqtt_project.topics import ROS, NET, ARUCO
 
-from slam_mqtt_project.topics import ROS, MQTT as MQTT_TOPICS, NET, ARUCO
-
-# ====== 상수 ======
 PHOTO_DIR = "/home/pinky/collision_photos"
+MAP_DIR = "/home/pinky/saved_maps"
 MAX_PHOTOS = 30
-COLLISION_DISTANCE = 0.25
-COOLDOWN_TIME = 3.0
-HTTP_PORT = NET.COLLISION_PORT
-
-# ArUco 도킹 설정 - topics.py에서 가져옴
-ARUCO_DETECT_RATE = 10.0  # 10 FPS (0.1초마다 감지)
-DOCK_MARKER_IDS = ARUCO.DOCK_MARKER_IDS
-ARUCO_PORT_MAP = ARUCO.PORT_MAP
-
-# 측정된 도킹 목표값 (캘리브레이션: 2025-12-17)
-DOCK_TARGET_X = 0.0       # 마커 중앙 정렬 (normalized: -1 ~ 1)
-DOCK_TARGET_SIZE = ARUCO.DOCK_SIZE_TARGET
-DOCK_CENTER_TOLERANCE = ARUCO.DOCK_CENTER_TOLERANCE
-DOCK_SIZE_TOLERANCE = 30
-
-# PORT 저장
-PORT_GOALS_FILE = "/home/pinky/saved_maps/port_goals.json"
+COOLDOWN = 3.0
 
 
 class CollisionPhotoNode(Node):
     def __init__(self):
         super().__init__('collision_photo_node')
         
-        # 상태
-        self.last_photo_time = 0.0
+        self.last_photo = 0.0
         self.camera = None
-        self.camera_ok = False
-        self.aruco_dict = None
-        self.aruco_params = None
-        self._last_aruco_log = 0
-        self.collision_enabled = True
-        
-        # PORT 저장
-        self.port_goals = self._load_port_goals()
-        self.current_x = self.current_y = self.current_yaw = 0.0
-        self.port_save_enabled = False
+        self.cam_ok = False
+        self.aruco_dict = self.aruco_params = None
+        self.x = self.y = self.yaw = 0.0
+        self.port_save = False
         self.saved_ports = set()
+        self.port_goals = self._load_ports()
         
         os.makedirs(PHOTO_DIR, exist_ok=True)
         
-        # 카메라 초기화
-        if PICAMERA_AVAILABLE:
-            self._init_camera()
+        if PICAM_OK:
+            self._init_cam()
         
         # Subscribers
-        self.create_subscription(Float32, ROS.ULTRASONIC, self.ultrasonic_cb, 10)
-        self.create_subscription(Bool, ROS.COLLISION_TRIGGER, self.trigger_cb, 10)
+        self.create_subscription(Float32, ROS.ULTRASONIC, self.us_cb, 10)
+        self.create_subscription(Bool, ROS.COLLISION_TRIGGER, self.trig_cb, 10)
         self.create_subscription(Odometry, ROS.ODOM, self.odom_cb, 10)
         self.create_subscription(String, ROS.ROBOT_MODE, self.mode_cb, 10)
         
         # Publishers
         self.photo_pub = self.create_publisher(String, ROS.COLLISION_PHOTO_READY, 10)
-        self.image_pub = self.create_publisher(CompressedImage, ROS.COLLISION_IMAGE, 1)
         self.aruco_pub = self.create_publisher(String, ROS.ARUCO_HOME_DETECTED, 10)
-        self.cmd_vel_pub = self.create_publisher(Twist, ROS.CMD_VEL, 10)
         
-        # MQTT
-        self.mqtt = None
-        if MQTT_AVAILABLE:
-            self._init_mqtt()
-        
-        # Flask
-        if FLASK_AVAILABLE:
+        if FLASK_OK:
             self._start_flask()
         
-        # ArUco 타이머
-        self.create_timer(1.0 / ARUCO_DETECT_RATE, self.detect_aruco)
-        
-        self.get_logger().info(f"📷 Collision Photo Node Started")
-        self.get_logger().info(f"   Photo Dir: {PHOTO_DIR}, HTTP Port: {HTTP_PORT}")
+        self.create_timer(0.1, self.detect_aruco)
+        self.get_logger().info(f"📷 Collision Photo Node (port {NET.COLLISION_PORT})")
 
-    def _init_camera(self):
+    def _init_cam(self):
         global cv2
         if cv2 is None:
             import cv2 as _cv2
             cv2 = _cv2
         try:
             self.camera = Picamera2()
-            config = self.camera.create_still_configuration(
-                main={"format": "RGB888", "size": (640, 480)}
-            )
-            self.camera.configure(config)
+            self.camera.configure(self.camera.create_still_configuration(
+                main={"format": "RGB888", "size": (640, 480)}))
             self.camera.start()
-            self.camera_ok = True
+            self.cam_ok = True
             self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
             self.aruco_params = cv2.aruco.DetectorParameters()
-            self.get_logger().info("✅ Camera + ArUco initialized")
         except Exception as e:
-            self.get_logger().error(f"Camera init failed: {e}")
+            self.get_logger().error(f"Camera error: {e}")
 
-    def _init_mqtt(self):
+    def _load_ports(self):
         try:
-            self.mqtt = mqtt.Client()
-            self.mqtt.connect_async(MQTT_TOPICS.HOST, MQTT_TOPICS.PORT, 60)
-            self.mqtt.loop_start()
-        except Exception as e:
-            self.get_logger().warn(f"MQTT init failed: {e}")
+            with open("/home/pinky/saved_maps/port_goals.json") as f:
+                return json.load(f)
+        except:
+            return {}
 
-    def _load_port_goals(self) -> dict:
+    def _save_ports(self):
         try:
-            if os.path.exists(PORT_GOALS_FILE):
-                with open(PORT_GOALS_FILE, 'r') as f:
-                    data = json.load(f)
-                    self.get_logger().info(f"📂 Loaded {len(data)} port goals")
-                    return data
-        except Exception as e:
-            self.get_logger().warn(f"Failed to load port goals: {e}")
-        return {}
-
-    def _save_port_goals(self):
-        try:
-            os.makedirs(os.path.dirname(PORT_GOALS_FILE), exist_ok=True)
-            with open(PORT_GOALS_FILE, 'w') as f:
+            with open("/home/pinky/saved_maps/port_goals.json", 'w') as f:
                 json.dump(self.port_goals, f, indent=2)
-            self.get_logger().info(f"💾 Saved: {list(self.port_goals.keys())}")
-        except Exception as e:
-            self.get_logger().error(f"Save failed: {e}")
+        except: pass
 
     def _start_flask(self):
         app = Flask(__name__)
+        import logging
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        
+        @app.route('/')
+        def index():
+            maps = sorted([f for f in os.listdir(MAP_DIR) if f.endswith('.png')], reverse=True)
+            photos = sorted([f for f in os.listdir(PHOTO_DIR) if f.endswith('.jpg')], reverse=True)[:5]
+            html = '''<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pinky Robot</title>
+<style>body{font-family:Arial;margin:20px;background:#1a1a2e;color:#eee}
+h1,h2{color:#4fc3f7}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:15px}
+.card{background:#16213e;border-radius:10px;padding:10px;text-align:center}
+.card img{max-width:100%;border-radius:5px}.card a{color:#4fc3f7;text-decoration:none}</style></head>
+<body><h1>🤖 Pinky Robot</h1><h2>🗺️ Maps</h2><div class="grid">'''
+            for m in maps:
+                html += f'<div class="card"><a href="/maps/{m}"><img src="/maps/{m}"><br>{m}</a></div>'
+            html += '</div><h2>📸 Photos</h2><div class="grid">'
+            for p in photos:
+                html += f'<div class="card"><a href="/photos/{p}"><img src="/photos/{p}"><br>{p}</a></div>'
+            return html + '</div></body></html>'
+        
+        @app.route('/maps')
+        def list_maps():
+            return jsonify(sorted([f for f in os.listdir(MAP_DIR) if f.endswith(('.png','.pgm','.yaml'))]))
+        
+        @app.route('/maps/<fn>')
+        def get_map(fn):
+            p = os.path.join(MAP_DIR, fn)
+            return send_file(p, mimetype='image/png') if os.path.exists(p) else ("Not found", 404)
         
         @app.route('/photos')
         def list_photos():
-            files = sorted([f for f in os.listdir(PHOTO_DIR) if f.endswith('.jpg')])
-            return jsonify(files)
+            return jsonify(sorted([f for f in os.listdir(PHOTO_DIR) if f.endswith('.jpg')]))
         
-        @app.route('/photos/<filename>')
-        def get_photo(filename):
-            path = os.path.join(PHOTO_DIR, filename)
-            if os.path.exists(path):
-                return send_file(path, mimetype='image/jpeg')
-            return "Not found", 404
+        @app.route('/photos/<fn>')
+        def get_photo(fn):
+            p = os.path.join(PHOTO_DIR, fn)
+            return send_file(p, mimetype='image/jpeg') if os.path.exists(p) else ("Not found", 404)
         
         @app.route('/latest')
         def latest():
             files = sorted([f for f in os.listdir(PHOTO_DIR) if f.endswith('.jpg')])
-            if files:
-                return send_file(os.path.join(PHOTO_DIR, files[-1]), mimetype='image/jpeg')
-            return "No photos", 404
+            return send_file(os.path.join(PHOTO_DIR, files[-1]), mimetype='image/jpeg') if files else ("No photos", 404)
         
-        threading.Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT, threaded=True), daemon=True).start()
-        self.get_logger().info(f"🌐 HTTP server on port {HTTP_PORT}")
+        threading.Thread(target=lambda: app.run(host='0.0.0.0', port=NET.COLLISION_PORT, threaded=True), daemon=True).start()
 
-    # ====== Callbacks ======
-    def odom_cb(self, msg):
-        self.current_x = msg.pose.pose.position.x
-        self.current_y = msg.pose.pose.position.y
-        q = msg.pose.pose.orientation
-        self.current_yaw = math.atan2(2.0*(q.w*q.z + q.x*q.y), 1.0 - 2.0*(q.y*q.y + q.z*q.z))
+    def odom_cb(self, m):
+        self.x, self.y = m.pose.pose.position.x, m.pose.pose.position.y
+        q = m.pose.pose.orientation
+        self.yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
 
-    def mode_cb(self, msg):
-        mode = msg.data.upper()
-        was_enabled = self.port_save_enabled
-        self.port_save_enabled = (mode == "SLAM")
-        if self.port_save_enabled and not was_enabled:
+    def mode_cb(self, m):
+        self.port_save = m.data.upper() == "SLAM"
+        if self.port_save:
             self.saved_ports.clear()
-            self.get_logger().info("📍 PORT save ENABLED (SLAM mode)")
 
-    def ultrasonic_cb(self, msg):
-        if not self.collision_enabled:
-            return
-        if msg.data < COLLISION_DISTANCE:
-            self.capture_photo(msg.data)
+    def us_cb(self, m):
+        if m.data < 0.25:
+            self.capture(m.data)
 
-    def trigger_cb(self, msg):
-        if msg.data:
-            self.capture_photo(0.0)
+    def trig_cb(self, m):
+        if m.data:
+            self.capture(0.0)
 
-    def capture_photo(self, distance: float):
+    def capture(self, dist):
         now = time.time()
-        if now - self.last_photo_time < COOLDOWN_TIME or not self.camera_ok:
+        if now - self.last_photo < COOLDOWN or not self.cam_ok:
             return
-        
         try:
-            frame = self.camera.capture_array()
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"collision_{timestamp}_{distance:.2f}m.jpg"
-            filepath = os.path.join(PHOTO_DIR, filename)
-            
-            cv2.imwrite(filepath, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            self.last_photo_time = now
-            
-            self.get_logger().info(f"📸 Photo saved: {filename}")
-            
-            # 오래된 사진 삭제
-            self._cleanup_old_photos()
-            
-            # 발행
-            self.photo_pub.publish(String(data=json.dumps({
-                'filename': filename,
-                'distance': distance,
-                'timestamp': timestamp
-            })))
-            
-            if self.mqtt:
-                self.mqtt.publish(MQTT_TOPICS.COLLISION_PHOTO, filename)
+            frame = cv2.rotate(self.camera.capture_array(), cv2.ROTATE_180)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fn = f"collision_{ts}_{dist:.2f}m.jpg"
+            cv2.imwrite(os.path.join(PHOTO_DIR, fn), frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            self.last_photo = now
+            self._cleanup()
+            self.photo_pub.publish(String(data=json.dumps({'filename': fn, 'distance': dist})))
         except Exception as e:
-            self.get_logger().error(f"Photo capture failed: {e}")
+            self.get_logger().error(f"Capture error: {e}")
 
-    def _cleanup_old_photos(self):
+    def _cleanup(self):
         files = sorted([f for f in os.listdir(PHOTO_DIR) if f.endswith('.jpg')])
         while len(files) > MAX_PHOTOS:
-            old = files.pop(0)
             try:
-                os.remove(os.path.join(PHOTO_DIR, old))
-                self.get_logger().info(f"🗑️ Removed: {old}")
-            except:
-                pass
+                os.remove(os.path.join(PHOTO_DIR, files.pop(0)))
+            except: pass
 
     def detect_aruco(self):
-        if not self.camera_ok or self.aruco_dict is None:
+        if not self.cam_ok or not self.aruco_dict:
             return
-        
         try:
-            frame = self.camera.capture_array()
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
+            frame = cv2.rotate(self.camera.capture_array(), cv2.ROTATE_180)
             gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            
-            detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
-            corners, ids, _ = detector.detectMarkers(gray)
+            corners, ids, _ = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params).detectMarkers(gray)
             
             if ids is not None:
-                for i, marker_id in enumerate(ids.flatten()):
-                    marker_id = int(marker_id)  # numpy.int32 → int (JSON 직렬화용)
-                    corner = corners[i][0]
+                for i, mid in enumerate(ids.flatten()):
+                    mid = int(mid)
+                    if mid not in ARUCO.DOCK_MARKER_IDS:
+                        continue
+                    c = corners[i][0]
+                    cx = (np.mean(c[:, 0]) - 320) / 320
+                    sz = (np.linalg.norm(c[0]-c[1]) + np.linalg.norm(c[1]-c[2])) / 2
                     
-                    # 중심/크기 계산
-                    center_x = np.mean(corner[:, 0])
-                    center_y = np.mean(corner[:, 1])
-                    normalized_x = (center_x - 320) / 320
-                    normalized_y = (center_y - 240) / 240
+                    self.aruco_pub.publish(String(data=json.dumps({
+                        "detected": True, "marker_id": mid,
+                        "center_x": round(float(cx), 3), "size": round(float(sz), 1),
+                        "port_name": ARUCO.PORT_MAP.get(mid, f"ID:{mid}")
+                    })))
                     
-                    width = np.linalg.norm(corner[0] - corner[1])
-                    height = np.linalg.norm(corner[1] - corner[2])
-                    marker_size = (width + height) / 2
-                    
-                    # 도킹용 마커 발행 (PORT_A=0, PORT_B=1만)
-                    if marker_id in DOCK_MARKER_IDS:
-                        port_name = ARUCO_PORT_MAP.get(marker_id, f"ID:{marker_id}")
-                        self.aruco_pub.publish(String(data=json.dumps({
-                            "detected": True,
-                            "center_x": round(float(normalized_x), 3),
-                            "center_y": round(float(normalized_y), 3),
-                            "size": round(float(marker_size), 1),
-                            "marker_id": marker_id,
-                            "port_name": port_name
-                        })))
-                    
-                    # PORT 저장 시도
-                    self._try_save_port(marker_id, normalized_x, marker_size, frame, corner)
-                    
-                    # 로그 (PORT_A, B만 0.5초마다)
-                    now = time.time()
-                    if marker_id in DOCK_MARKER_IDS and now - self._last_aruco_log > 0.5:
-                        name = ARUCO_PORT_MAP.get(marker_id, f"ID:{marker_id}")
-                        self.get_logger().info(f"🎯 {name}: x={normalized_x:.2f}, size={marker_size:.0f}px")
-                        self._last_aruco_log = now
+                    # PORT 저장
+                    if self.port_save and mid in ARUCO.DOCK_MARKER_IDS:
+                        pn = ARUCO.PORT_MAP.get(mid)
+                        if pn and pn not in self.saved_ports and abs(cx) < ARUCO.DOCK_CENTER_TOLERANCE:
+                            if abs(sz - ARUCO.DOCK_SIZE_TARGET) < 30:
+                                self.port_goals[pn] = {"x": round(self.x,4), "y": round(self.y,4), "yaw": round(self.yaw,4)}
+                                self.saved_ports.add(pn)
+                                self._save_ports()
+                                self.get_logger().info(f"✅ PORT SAVED: {pn}")
             else:
                 self.aruco_pub.publish(String(data=json.dumps({"detected": False})))
-        except Exception as e:
-            self.get_logger().error(f"ArUco detect error: {e}")
-
-    def _try_save_port(self, marker_id, center_x, marker_size, frame, corner):
-        if not self.port_save_enabled:
-            return
-        
-        # PORT_A(0), PORT_B(1) 둘 다 저장
-        if marker_id not in DOCK_MARKER_IDS:
-            return
-        
-        port_name = ARUCO_PORT_MAP.get(marker_id)
-        if not port_name or port_name in self.saved_ports:
-            return
-        
-        # 정렬 체크
-        if abs(center_x) > DOCK_CENTER_TOLERANCE:
-            return
-        if abs(marker_size - DOCK_TARGET_SIZE) > DOCK_SIZE_TOLERANCE:
-            return
-        
-        # 저장
-        self.port_goals[port_name] = {
-            "x": round(self.current_x, 4),
-            "y": round(self.current_y, 4),
-            "yaw": round(self.current_yaw, 4),
-            "aruco_id": marker_id,
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-        }
-        self.saved_ports.add(port_name)
-        self._save_port_goals()
-        
-        # 사진
-        try:
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            pts = corner.astype(np.int32).reshape((-1, 1, 2))
-            cv2.polylines(frame_bgr, [pts], True, (0, 255, 0), 3)
-            cx, cy = int(np.mean(corner[:, 0])), int(np.mean(corner[:, 1]))
-            cv2.putText(frame_bgr, f"{port_name} SAVED", (cx-50, cy-20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            filepath = os.path.join(PHOTO_DIR, f"port_{port_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
-            cv2.imwrite(filepath, frame_bgr)
-        except:
-            pass
-        
-        self.get_logger().info("=" * 50)
-        self.get_logger().info(f"✅ PORT SAVED: {port_name} (ID:{marker_id})")
-        self.get_logger().info(f"   Pos: ({self.current_x:.3f}, {self.current_y:.3f})")
-        self.get_logger().info("=" * 50)
+        except: pass
 
 
 def main(args=None):
@@ -368,8 +230,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.ok() and rclpy.shutdown()
 
 
 if __name__ == '__main__':

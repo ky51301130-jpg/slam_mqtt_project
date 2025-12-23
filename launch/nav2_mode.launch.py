@@ -159,7 +159,7 @@ def generate_launch_description():
             'fps': 1.0,
             'width': 320,
             'height': 240,
-            'port': 5000,
+            'port': 5200,  # collision_photo는 5000 사용
         }],
     )
 
