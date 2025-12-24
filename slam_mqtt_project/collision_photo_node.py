@@ -41,6 +41,7 @@ class CollisionPhotoNode(Node):
         self.aruco_dict = self.aruco_params = None
         self.x = self.y = self.yaw = 0.0
         self.port_save = False
+        self.aruco_enabled = True  # 8사이클 완료 시 False
         self.saved_ports = set()
         self.port_goals = self._load_ports()
         
@@ -54,6 +55,7 @@ class CollisionPhotoNode(Node):
         self.create_subscription(Bool, ROS.COLLISION_TRIGGER, self.trig_cb, 10)
         self.create_subscription(Odometry, ROS.ODOM, self.odom_cb, 10)
         self.create_subscription(String, ROS.ROBOT_MODE, self.mode_cb, 10)
+        self.create_subscription(String, ROS.MAP_SAVER_CYCLE, self.cycle_cb, 10)  # 사이클 완료 구독
         
         # Publishers
         self.photo_pub = self.create_publisher(String, ROS.COLLISION_PHOTO_READY, 10)
@@ -149,9 +151,21 @@ h1,h2{color:#4fc3f7}.grid{display:grid;grid-template-columns:repeat(auto-fill,mi
         self.yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
 
     def mode_cb(self, m):
-        self.port_save = m.data.upper() == "SLAM"
+        mode = m.data.upper()
+        self.port_save = mode == "SLAM"
         if self.port_save:
             self.saved_ports.clear()
+            self.aruco_enabled = True  # SLAM 모드 시작 시 ArUco 활성화
+
+    def cycle_cb(self, m):
+        """8사이클 완료 시 ArUco 감지 중지"""
+        try:
+            d = json.loads(m.data)
+            if d.get('event') == 'cycle_complete':
+                self.aruco_enabled = False
+                self.port_save = False
+                self.get_logger().info("🛑 8사이클 완료 → ArUco 감지 중지")
+        except: pass
 
     def us_cb(self, m):
         if m.data < 0.25:
@@ -185,7 +199,7 @@ h1,h2{color:#4fc3f7}.grid{display:grid;grid-template-columns:repeat(auto-fill,mi
             except: pass
 
     def detect_aruco(self):
-        if not self.cam_ok or not self.aruco_dict:
+        if not self.cam_ok or not self.aruco_dict or not self.aruco_enabled:
             return
         try:
             frame = cv2.rotate(self.camera.capture_array(), cv2.ROTATE_180)

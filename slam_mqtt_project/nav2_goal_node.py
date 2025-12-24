@@ -156,9 +156,10 @@ class Nav2GoalNode(Node):
     def on_mqtt_connect(self, client, userdata, flags, rc):
         if rc == 0:
             topics = [
-                MQTT.SUB_PLC_LOCATION,  # 위치 이름 (예: "PORT_A")
-                MQTT.SUB_PLC_GOAL,      # 좌표 (예: {"x":1.0, "y":2.0, "yaw":0})
-                "nav2/initial_pose",    # 초기 위치 설정
+                MQTT.SUB_PLC_LOCATION,   # 위치 이름: 'A' 또는 'B'
+                MQTT.SUB_PLC_GOAL,       # 좌표 (예: {"x":1.0, "y":2.0, "yaw":0})
+                MQTT.SUB_ROBOT_NAV,      # PLC → robot/navigate_to_pose
+                "nav2/initial_pose",     # 초기 위치 설정
             ]
             for topic in topics:
                 client.subscribe(topic, qos=1)
@@ -171,7 +172,7 @@ class Nav2GoalNode(Node):
             payload = msg.payload.decode('utf-8')
             topic = msg.topic
             
-            if topic == MQTT.SUB_PLC_LOCATION:
+            if topic == MQTT.SUB_PLC_LOCATION or topic == MQTT.SUB_ROBOT_NAV:
                 self.handle_location_command(payload)
             elif topic == MQTT.SUB_PLC_GOAL:
                 self.handle_goal_command(payload)
@@ -186,24 +187,56 @@ class Nav2GoalNode(Node):
         """
         PLC 위치 명령 처리
         
-        PLC 포맷: {"A":1,"B":0} → PORT_A로 이동
-                  {"A":0,"B":1} → PORT_B로 이동
-        레거시 포맷: "PORT_A", "HOME" 등 (문자열)
+        PLC 포맷:
+          - 단일 문자: 'A' → PORT_A, 'B' → PORT_B
+          - JSON (PLC): {"A":1,"B":0} → PORT_A로 이동
+          - JSON (ArUco): {"type":"aruco_port", "port":"A", "position":{...}} → 좌표로 이동
+          - 문자열: "PORT_A", "HOME" 등
         """
         payload = payload.strip()
+        self.get_logger().info(f"📨 PLC 명령 수신: '{payload}'")
         
         # 취소 명령 체크
         if payload.lower() in ['cancel', 'stop']:
             self.cancel_goal()
             return
         
-        # JSON 포맷 처리: {"A":1,"B":0}
+        # 단일 문자 처리: 'A' → PORT_A, 'B' → PORT_B
+        if len(payload) == 1 and payload.upper() in ['A', 'B']:
+            target = f"PORT_{payload.upper()}"
+            self.get_logger().info(f"🎯 단일 문자 '{payload}' → {target}")
+            self._goto_port(target)
+            return
+        
+        # JSON 포맷 처리
         if payload.startswith('{'):
             try:
                 data = json.loads(payload)
-                target = None
                 
-                # 값이 1인 키 찾기
+                # ArUco 포트 형식: {"type":"aruco_port", "port":"A", "position":{x,y,z}, "orientation":{w,x,y,z}}
+                if data.get('type') == 'aruco_port':
+                    port = data.get('port', '').upper()
+                    position = data.get('position', {})
+                    orientation = data.get('orientation', {})
+                    
+                    x = float(position.get('x', 0))
+                    y = float(position.get('y', 0))
+                    
+                    # quaternion to yaw
+                    w = float(orientation.get('w', 1.0))
+                    z = float(orientation.get('z', 0.0))
+                    yaw = 2.0 * math.atan2(z, w)
+                    
+                    target = f"PORT_{port}" if len(port) == 1 else port
+                    self.current_target_port = target
+                    self.target_port_pub.publish(String(data=target))
+                    
+                    self.get_logger().info(f"🎯 ArUco 포트 '{port}' → ({x:.3f}, {y:.3f}, yaw={yaw:.2f})")
+                    self.send_goal(x, y, yaw)
+                    return
+                
+                # 기존 PLC 형식: {"A":1,"B":0}
+                target = None
                 for key, value in data.items():
                     if value == 1:
                         # A → PORT_A, B → PORT_B, HOME → HOME
@@ -223,7 +256,7 @@ class Nav2GoalNode(Node):
                 self.get_logger().error(f"JSON parse error: {e}")
             return
         
-        # 레거시 문자열 포맷: "PORT_A", "HOME" 등
+        # 문자열 포맷: "PORT_A", "HOME" 등
         target = payload.upper()
         self._goto_port(target)
     

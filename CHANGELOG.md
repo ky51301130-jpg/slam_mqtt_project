@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-12-24
+
+### Added
+- 🎯 **PLC 단일 문자 명령 지원** - `A`, `B` 단일 문자로 PORT_A, PORT_B 이동 가능
+- 🔗 **ArUco 포트 좌표 수신** - `robot/navigate_to_pose` 토픽으로 정밀 좌표 수신
+- 📡 **MQTT 구독 토픽 확장** - `/plc/#`, `robot/navigate_to_pose` 추가
+
+### Changed
+- 🔧 **MQTT 토픽 슬래시 통일**
+  - `plc/#` → `/plc/#` (슬래시 포함)
+  - `plc/location` → `/plc/location`
+  - `plc/goal` → `/plc/goal`
+- 📝 **PLC 명령 처리 개선** (`nav2_goal_node.py`)
+  - 단일 문자: `A` → `PORT_A`
+  - JSON (PLC): `{"A":1,"B":0}` → `PORT_A`
+  - JSON (ArUco): `{"type":"aruco_port", "port":"A", ...}` → 좌표로 직접 이동
+- 🗺️ **맵 다운로드 시점 변경** - Nav2 시작 전에 서버에서 맵 다운로드 (launch 시)
+
+### Fixed
+- 🐛 **PLC 신호 수신 불가 버그** - MQTT 토픽 매칭 오류 수정 (`/plc/location` ≠ `plc/location`)
+- 🐛 **ArUco 감지 무한 루프** - 8사이클 완료 시 ArUco 감지 중지
+
+### Documentation
+- 📚 README.md PLC 통신 섹션 전면 개편
+- 📚 MQTT 토픽 및 메시지 형식 예시 업데이트
+
+---
+
 ## [1.2.0] - 2025-12-23
 
 ### Added

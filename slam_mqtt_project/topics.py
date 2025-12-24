@@ -132,9 +132,10 @@ class MQTT:
     
     # ======================== 구독 (외부 → 로봇) ========================
     SUB_MCU_SENSORS = "/mcu/sensors"         # MCU 센서 (Lux 등) 이거 실제니까 수정하지마 절대로
-    SUB_PLC = "plc/#"                       # PLC 명령 (location, goal)
-    SUB_PLC_LOCATION = "/plc/location"       # PLC 위치 명령: {"A":1,"B":0} 또는 {"A":0,"B":1} 이것도 절대 수정하지마 ASCII채로 옴
-    SUB_PLC_GOAL = "plc/goal"               # PLC 좌표 명령: {"x":1.0,"y":2.0,"yaw":0}
+    SUB_PLC = "/plc/#"                      # PLC 명령 (location, goal) - 슬래시 포함!
+    SUB_PLC_LOCATION = "/plc/location"       # PLC 위치 명령: 'A' 또는 'B' (단일 문자)
+    SUB_PLC_GOAL = "/plc/goal"              # PLC 좌표 명령: {"x":1.0,"y":2.0,"yaw":0}
+    SUB_ROBOT_NAV = "robot/navigate_to_pose" # PLC → 로봇 네비게이션 명령
     SUB_SERVER = "server/#"                 # 서버 명령
     SUB_NAV2 = "nav2/#"                     # Nav2 명령
     
@@ -142,6 +143,7 @@ class MQTT:
     SUBSCRIBE_LIST = [
         SUB_MCU_SENSORS,
         SUB_PLC,
+        SUB_ROBOT_NAV,
         SUB_SERVER,
         SUB_NAV2,
     ]

@@ -292,18 +292,41 @@ initial_pose:
 
 ### 3. 🎯 nav2_goal_node.py (MQTT → Nav2 Goal)
 
-**역할**: MQTT/PLC 명령을 Nav2 Action으로 변환
+**역할**: MQTT/PLC 명령을 Nav2 Action으로 변환 + ArUco 정밀 도킹 연계
+
+**지원하는 PLC 명령 형식**:
+
+| 형식 | 예시 | 동작 |
+|------|------|------|
+| 단일 문자 | `A`, `B` | → PORT_A, PORT_B로 이동 |
+| JSON (PLC) | `{"A":1,"B":0}` | 값이 1인 키로 이동 |
+| JSON (ArUco) | `{"type":"aruco_port", ...}` | 좌표로 직접 이동 |
+| 문자열 | `PORT_A`, `HOME` | 저장된 위치로 이동 |
 
 **핵심 코드**:
 
 ```python
-# ===== Nav2 Action Client 설정 =====
-from rclpy.action import ActionClient
-from nav2_msgs.action import NavigateToPose
+# ===== PLC 명령 처리 (단일 문자 지원) =====
+def handle_location_command(self, payload: str):
+    payload = payload.strip()
+    
+    # 단일 문자: 'A' → PORT_A
+    if len(payload) == 1 and payload.upper() in ['A', 'B']:
+        target = f"PORT_{payload.upper()}"
+        self._goto_port(target)
+        return
+    
+    # ArUco 포트 형식: {"type":"aruco_port", "port":"A", "position":{...}}
+    if payload.startswith('{'):
+        data = json.loads(payload)
+        if data.get('type') == 'aruco_port':
+            x = float(data['position']['x'])
+            y = float(data['position']['y'])
+            yaw = 2.0 * math.atan2(data['orientation']['z'], data['orientation']['w'])
+            self.send_goal(x, y, yaw)
+            return
 
-self._action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-
-# ===== Goal 전송 =====
+# ===== Nav2 Goal 전송 =====
 def send_goal(self, x: float, y: float, yaw: float = 0.0):
     goal_msg = NavigateToPose.Goal()
     goal_msg.pose.header.frame_id = 'map'
@@ -1179,12 +1202,23 @@ class Nav2GoalNode(Node):
 
 | MQTT Topic | 방향 | 설명 |
 |------------|------|------|
-| `robot/navigate_to_pose` | 로봇→서버 | Nav2 Goal 요청 값 (PLC 명령 수신 시 자동 발행) |
-| `robot/nav_result` | 로봇→서버 | Nav2 완료/실패 이유 (SUCCEEDED/ABORTED/CANCELED) |
-| `plc/location` | PLC→로봇 | PLC가 요청한 목적지 이름 ("station1") |
-| `plc/goal` | PLC→로봇 | PLC 좌표 기반 Goal ({"x":1.0, "y":2.0, "yaw":0}) |
+| `/plc/location` | PLC→로봇 | PLC 목적지 명령: `A`, `B` (단일 문자) |
+| `/plc/goal` | PLC→로봇 | PLC 좌표 기반 Goal: `{"x":1.0, "y":2.0, "yaw":0}` |
+| `robot/navigate_to_pose` | 서버→로봇 | ArUco 포트 좌표: `{"type":"aruco_port", "port":"A", ...}` |
+| `robot/nav_status` | 로봇→서버 | Nav2 진행 상태 (NAVIGATING/ERROR) |
+| `robot/nav_result` | 로봇→서버 | Nav2 완료/실패 (SUCCEEDED/ABORTED/CANCELED) |
 
-**흐름**: `PLC → plc/location → server_mqtt_bridge(서버) → mqtt_bridge(로봇) → nav2_goal_node → Nav2 → robot/nav_result`
+**PLC 명령 형식:**
+```bash
+# 단일 문자 (권장)
+mosquitto_pub -h 192.168.0.3 -t '/plc/location' -m 'A'   # → PORT_A로 이동
+mosquitto_pub -h 192.168.0.3 -t '/plc/location' -m 'B'   # → PORT_B로 이동
+
+# JSON 형식 (기존 호환)
+mosquitto_pub -h 192.168.0.3 -t '/plc/location' -m '{"A":1,"B":0}'  # → PORT_A
+```
+
+**흐름**: `PLC → /plc/location → nav2_goal_node → Nav2 → robot/nav_result`
 
 #### 📌 (B) SLAM / Map 생성 파이프라인
 
@@ -1272,8 +1306,9 @@ MQTT Broker (192.168.0.3:1883)
 | `/battery/voltage` | `battery/status` | ROS2 → MQTT |
 | `/map_saver/cycle_complete` | `ros/map_cycle_complete` | ROS2 → MQTT |
 | `mcu/sensors` | `/mqtt/mcu_sensors` | MQTT → ROS2 |
-| `plc/location` | `/mqtt/plc_location` | MQTT → ROS2 |
-| `plc/goal` | `/mqtt/plc_goal` | MQTT → ROS2 |
+| `/plc/location` | → nav2_goal_node | MQTT → Nav2 Goal |
+| `/plc/goal` | → nav2_goal_node | MQTT → Nav2 Goal |
+| `robot/navigate_to_pose` | → nav2_goal_node | MQTT → Nav2 Goal (ArUco) |
 
 ---
 
@@ -1290,9 +1325,22 @@ mqtt.publish("mcu/sensors", json.dumps({
     "Humidity": 45.0
 }))
 
-# ===== PLC에서 로봇에 이동 명령 =====
-mqtt.publish("plc/location", "station1")
-mqtt.publish("plc/goal", '{"x":2.0, "y":1.5, "yaw":1.57}')
+# ===== PLC에서 로봇에 이동 명령 (권장: 단일 문자) =====
+mqtt.publish("/plc/location", "A")  # PORT_A로 이동
+mqtt.publish("/plc/location", "B")  # PORT_B로 이동
+
+# ===== PLC에서 로봇에 이동 명령 (JSON 형식) =====
+mqtt.publish("/plc/location", '{"A":1,"B":0}')  # PORT_A로 이동
+mqtt.publish("/plc/goal", '{"x":2.0, "y":1.5, "yaw":1.57}')
+
+# ===== ArUco 포트 좌표로 이동 (서버에서 발행) =====
+mqtt.publish("robot/navigate_to_pose", json.dumps({
+    "type": "aruco_port",
+    "port": "A",
+    "location": "PORT_A",
+    "position": {"x": -0.024, "y": -0.2685, "z": 0.0},
+    "orientation": {"w": 0.9904, "x": 0.0, "y": 0.0, "z": -0.1385}
+}))
 
 # ===== 서버에서 위치 프리셋 업데이트 =====
 mqtt.publish("server/locations", json.dumps({

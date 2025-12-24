@@ -87,6 +87,97 @@ def cleanup_existing_processes(context, *args, **kwargs):
     return []
 
 
+def download_map_before_nav2(context, *args, **kwargs):
+    """Nav2 시작 전에 서버에서 맵 다운로드 (/status API 사용)"""
+    import requests
+    import os
+    import re
+    
+    map_dir = "/home/pinky/saved_maps/renew"
+    map_yaml = os.path.join(map_dir, "nav2_map.yaml")
+    map_pgm = os.path.join(map_dir, "nav2_map.pgm")
+    server_base = "http://192.168.0.3:5100"
+    
+    os.makedirs(map_dir, exist_ok=True)
+    
+    print("\n" + "="*50)
+    print("  📥 Nav2 맵 다운로드 시작...")
+    print("="*50)
+    
+    # 기존 맵이 있는지 확인
+    if os.path.exists(map_yaml) and os.path.exists(map_pgm):
+        print(f"  ✓ 기존 맵 발견: {map_yaml}")
+        print("  ✓ 서버에서 최신 맵 확인 시도...")
+    
+    # 서버에서 최신 맵 파일명 찾기 (/status API 사용)
+    try:
+        # /status API에서 maps.latest.name 으로 최신 맵 파일명 가져오기
+        status_url = f"{server_base}/status"
+        resp = requests.get(status_url, timeout=5)
+        
+        yaml_filename = None
+        pgm_filename = None
+        
+        if resp.status_code == 200:
+            status_data = resp.json()
+            # maps.latest.name 에서 파일명 추출
+            if 'maps' in status_data and 'latest' in status_data['maps']:
+                yaml_filename = status_data['maps']['latest'].get('name')
+                if yaml_filename:
+                    pgm_filename = yaml_filename.replace('.yaml', '.pgm')
+                    print(f"  ✓ 최신 맵 발견: {yaml_filename}")
+        
+        if not yaml_filename:
+            print("  ⚠️ 서버에서 맵 파일명을 찾을 수 없음")
+            if os.path.exists(map_yaml):
+                print(f"  ✓ 기존 맵 사용: {map_yaml}")
+            return []
+        
+        # YAML 다운로드
+        yaml_url = f"{server_base}/download/{yaml_filename}"
+        resp = requests.get(yaml_url, timeout=10)
+        if resp.status_code == 200:
+            # YAML 내용에서 image 경로를 로컬 파일명으로 수정
+            yaml_content = resp.text
+            yaml_content = re.sub(r'image:\s*\S+', 'image: nav2_map.pgm', yaml_content)
+            with open(map_yaml, 'w') as f:
+                f.write(yaml_content)
+            print(f"  ✓ YAML 다운로드 완료: {map_yaml}")
+        else:
+            print(f"  ⚠️ YAML 다운로드 실패: HTTP {resp.status_code}")
+            return []
+        
+        # PGM 다운로드
+        pgm_url = f"{server_base}/download/{pgm_filename}"
+        resp = requests.get(pgm_url, timeout=10)
+        if resp.status_code == 200:
+            with open(map_pgm, 'wb') as f:
+                f.write(resp.content)
+            print(f"  ✓ PGM 다운로드 완료: {map_pgm}")
+        else:
+            print(f"  ⚠️ PGM 다운로드 실패: HTTP {resp.status_code}")
+            
+    except requests.exceptions.ConnectionError:
+        print(f"  ⚠️ 서버 연결 실패 (192.168.0.3:5100)")
+        if os.path.exists(map_yaml):
+            print(f"  ✓ 기존 맵 사용: {map_yaml}")
+        else:
+            print(f"  ❌ 맵 파일 없음! Nav2가 실패할 수 있음")
+    except Exception as e:
+        print(f"  ⚠️ 맵 다운로드 오류: {e}")
+    
+    # 최종 확인
+    if os.path.exists(map_yaml) and os.path.exists(map_pgm):
+        print("  ✓ 맵 준비 완료!")
+    else:
+        print("  ⚠️ 맵 파일 없음 - Nav2 시작 시 오류 가능")
+    
+    print("="*50 + "\n")
+    time.sleep(1)
+    
+    return []
+
+
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
     # 기본 맵: robot_map_loader가 다운로드하는 위치
@@ -171,14 +262,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ===== 11. Robot Map Loader (서버에서 맵 다운로드) =====
-    map_loader_node = Node(
-        package='slam_mqtt_project',
-        executable='robot_map_loader',
-        name='robot_map_loader',
-        output='screen',
-    )
-
     # ===== 9. 모드 발행 (LCD에 NAV2 모드 표시) =====
     mode_publisher = ExecuteProcess(
         cmd=['ros2', 'topic', 'pub', '-r', '0.1', '/robot_mode', 
@@ -207,6 +290,9 @@ def generate_launch_description():
         # ========== 0. 기존 프로세스 정리 ==========
         OpaqueFunction(function=cleanup_existing_processes),
         
+        # ========== 1. 맵 다운로드 (Nav2 전에 먼저!) ==========
+        OpaqueFunction(function=download_map_before_nav2),
+        
         # ========== Launch Arguments ==========
         DeclareLaunchArgument(
             'use_sim_time',
@@ -227,20 +313,20 @@ def generate_launch_description():
         # ========== Launch Sequence ==========
         LogInfo(msg='🚀 Starting Nav2 Navigation Mode (pinky_navigation)...'),
         
-        # 1. 모드 발행 시작 (LCD에 NAV2 표시)
+        # 2. 모드 발행 시작 (LCD에 NAV2 표시)
         mode_publisher,
         
-        # 2. Bringup 먼저 (LiDAR, TF, 모터)
+        # 3. Bringup 먼저 (LiDAR, TF, 모터)
         bringup_launch,
         
-        # 3. Nav2 전체 스택 (3초 후 - TF 안정화 대기)
+        # 4. Nav2 전체 스택 (3초 후 - TF 안정화 대기)
         #    pinky_navigation/bringup_launch.xml 사용
         TimerAction(period=3.0, actions=[
             LogInfo(msg='🗺️ Starting Nav2 Stack (pinky_navigation)...'),
             nav2_launch
         ]),
         
-        # 4. 센서 + 상태 노드들 (4초 후)
+        # 5. 센서 + 상태 노드들 (4초 후)
         TimerAction(
             period=4.0,
             actions=[
@@ -250,7 +336,7 @@ def generate_launch_description():
             ]
         ),
         
-        # 5. Nav2 Goal Node + ArUco Dock Node + Map Loader (8초 후 - Nav2 준비 완료 대기)
+        # 6. Nav2 Goal Node + ArUco Dock Node (8초 후 - Nav2 준비 완료 대기)
         TimerAction(
             period=8.0, 
             actions=[
@@ -258,8 +344,6 @@ def generate_launch_description():
                 nav2_goal_node,
                 LogInfo(msg='🎯 Starting ArUco Dock Node (정밀 도킹)...'),
                 aruco_dock_node,
-                LogInfo(msg='📥 Starting Robot Map Loader (서버에서 맵 수신)...'),
-                map_loader_node,
             ]
         ),
         
